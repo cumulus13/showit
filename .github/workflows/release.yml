@@ -56,7 +56,7 @@ jobs:
 
   publish:
     name: Publish to crates.io
-    needs: release
+    # needs: release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
