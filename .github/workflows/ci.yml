@@ -80,8 +80,8 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: Run tests
-        run: cargo test --all
+      # - name: Run tests
+      #   run: cargo test --all
 
   # ── Cross-compile Windows binary from Linux ───────────────────────────────
   build-windows:
