@@ -1,0 +1,38 @@
+[package]
+name = "showit"
+version = "0.1.0"
+edition = "2021"
+authors = ["Hadi Cahyadi <cumulus13@gmail.com>"]
+description = "Bring any Windows window to the foreground by searching its title — fast, coloured, interactive."
+homepage = "https://github.com/cumulus13/showit"
+repository = "https://github.com/cumulus13/showit"
+license = "MIT"
+keywords = ["windows", "window-manager", "focus", "foreground", "cli"]
+categories = ["command-line-utilities"]
+readme = "README.md"
+exclude = [".github"]
+
+[dependencies]
+anyhow = "=1.0.86"
+clap = { version = "=4.4.18", features = ["derive", "color"] }
+colored = "=2.1.0"
+dirs = "=5.0.1"
+regex = "=1.10.4"
+serde = { version = "=1.0.197", features = ["derive"] }
+toml = "=0.7.8"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "=0.54.0", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+# Force older indexmap that doesn't require edition2024
+[dependencies.indexmap]
+version = "=2.2.6"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

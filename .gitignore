@@ -1,0 +1,14 @@
+/target
+*.exe
+*.zip
+
+# Added entries (3 items)
+*sublime*
+target/
+src/tmp*
+
+# Added entries (1 items)
+PLAN.md
+
+# Ignore Sublime Text project files
+*.sublime-*

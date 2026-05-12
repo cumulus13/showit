@@ -1,0 +1,55 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build release binaries and publish GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable + Windows target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      - name: Install mingw cross-compiler
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: release-cargo-
+
+      - name: Build Windows release binary
+        run: cargo build --release --target x86_64-pc-windows-gnu
+        env:
+          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER: x86_64-w64-mingw32-gcc
+
+      - name: Package binary
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/}"
+          ARCHIVE="showit-${VERSION}-x86_64-windows.zip"
+          cp target/x86_64-pc-windows-gnu/release/showit.exe showit.exe
+          zip "$ARCHIVE" showit.exe README.md LICENSE
+          echo "ARCHIVE=$ARCHIVE" >> $GITHUB_ENV
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ARCHIVE }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
