@@ -56,11 +56,7 @@ pub fn filter_windows<'a>(
             let pat = wildcard_to_regex(query);
             Some(Regex::new(&pat)?)
         }
-        MatchMode::Regex => Some(
-            RegexBuilder::new(query)
-                .case_insensitive(true)
-                .build()?,
-        ),
+        MatchMode::Regex => Some(RegexBuilder::new(query).case_insensitive(true).build()?),
     };
 
     let matches = windows
@@ -90,10 +86,22 @@ mod tests {
 
     fn make_windows() -> Vec<WindowInfo> {
         vec![
-            WindowInfo { hwnd: 1, title: "Firefox — GitHub".into() },
-            WindowInfo { hwnd: 2, title: "Visual Studio Code".into() },
-            WindowInfo { hwnd: 3, title: "Windows Terminal".into() },
-            WindowInfo { hwnd: 4, title: "Notepad — readme.txt".into() },
+            WindowInfo {
+                hwnd: 1,
+                title: "Firefox — GitHub".into(),
+            },
+            WindowInfo {
+                hwnd: 2,
+                title: "Visual Studio Code".into(),
+            },
+            WindowInfo {
+                hwnd: 3,
+                title: "Windows Terminal".into(),
+            },
+            WindowInfo {
+                hwnd: 4,
+                title: "Notepad — readme.txt".into(),
+            },
         ]
     }
 

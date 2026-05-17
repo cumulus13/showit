@@ -105,9 +105,9 @@ impl Default for Config {
             match_color: default_match_color(),
             error_color: default_error_color(),
             success_color: default_success_color(),
-        doc_color: default_doc_color(),
-        app_color: default_app_color(),
-        user_color: default_user_color(),
+            doc_color: default_doc_color(),
+            app_color: default_app_color(),
+            user_color: default_user_color(),
         }
     }
 }
@@ -141,13 +141,14 @@ impl Config {
     /// Write the default config template to disk so the user can edit it.
     pub fn write_default(path: &PathBuf) -> Result<()> {
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create config directory: {}", parent.display()))?;
+            fs::create_dir_all(parent).with_context(|| {
+                format!("Failed to create config directory: {}", parent.display())
+            })?;
         }
 
         let default_cfg = Self::default();
-        let content = toml::to_string_pretty(&default_cfg)
-            .context("Failed to serialize default config")?;
+        let content =
+            toml::to_string_pretty(&default_cfg).context("Failed to serialize default config")?;
 
         let header = "# showit configuration file\n\
                       # Colors must be valid hex strings: \"#RRGGBB\" or \"#RGB\"\n\

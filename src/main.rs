@@ -17,6 +17,7 @@ mod windows_api;
 
 use anyhow::Result;
 use clap::Parser;
+use clap_version_flag::colorful_version;
 use config::Config;
 use display::{colorize, print_error, print_success};
 use search::{detect_mode, filter_windows};
@@ -25,10 +26,10 @@ use windows_api::{bring_to_front, close_window, enumerate_windows, WindowInfo};
 
 #[derive(Parser, Debug)]
 #[command(
-    name    = "showit",
-    author  = "Hadi Cahyadi <cumulus13@gmail.com>",
+    name = "showit",
+    author = "Hadi Cahyadi <cumulus13@gmail.com>",
     version,
-    about   = "Search open window titles and bring one to the foreground",
+    about = "Search open window titles and bring one to the foreground",
     long_about = "Usage: showit <pattern>\n\n\
     Searches visible window titles. If one match: focus immediately.\n\
     If multiple: show list, pick a number.\n\n\
@@ -56,9 +57,20 @@ struct Args {
     init_config: bool,
 }
 
+enum PickAction {
+    // Continue,
+    NewSearch(String),
+    Quit,
+}
+
 fn main() -> Result<()> {
+    let os_args: Vec<String> = std::env::args().collect();
+    if os_args.len() == 2 && (os_args[1] == "-V" || os_args[1] == "--version") {
+        let version = colorful_version!();
+        version.print_and_exit();
+    }
     let args = Args::parse();
-    let cfg  = Config::load()?;
+    let cfg = Config::load()?;
 
     if args.config_path {
         println!("{}", Config::config_path().display());
@@ -79,33 +91,78 @@ fn main() -> Result<()> {
 }
 
 fn run(pattern: &str, force_regex: bool, cfg: &Config) -> Result<()> {
-    // 1. Enumerate visible windows (same as C# EnumWindows + IsWindowVisible)
-    let all = enumerate_windows()?;
+    let mut current_query = pattern.to_string();
 
-    // 2. Filter by pattern
-    let mode = detect_mode(pattern, force_regex);
-    let matched: Vec<&WindowInfo> = filter_windows(&all, pattern, &mode).unwrap_or_default();
+    loop {
+        // 1. Enumerate visible windows (same as C# EnumWindows + IsWindowVisible)
+        let all = enumerate_windows()?;
 
-    match matched.len() {
-        // ── No match ──────────────────────────────────────────────────────
-        0 => {
-            print_error(&format!("No matching windows found for '{}'.", pattern), cfg);
-        }
+        // 2. Filter by pattern
+        let mode = detect_mode(&current_query, force_regex);
 
-        // ── Single match: focus and done (exact original behaviour) ───────
-        1 => {
-            let win = matched[0];
-            match bring_to_front(win) {
-                Ok(())  => println!("{}", colorize(&format!("{} brought to the front.", win.title), &cfg.success_color)),
-                Err(e)  => print_error(&format!("Failed: {}", e), cfg),
+        let matched: Vec<&WindowInfo> =
+            filter_windows(&all, &current_query, &mode).unwrap_or_default();
+
+        match matched.len() {
+            // ── No match ──────────────────────────────────────────────────────
+            0 => {
+                print_error(
+                    &format!("No matching windows found for '{}'.", current_query),
+                    cfg,
+                );
+            }
+
+            // ── Single match: focus and done (exact original behaviour) ───────
+            1 => {
+                let win = matched[0];
+
+                match bring_to_front(win) {
+                    Ok(()) => {
+                        print_success(&format!("{} brought to the front.", win.title), cfg);
+                    }
+                    Err(e) => {
+                        print_error(&format!("Failed: {}", e), cfg);
+                    }
+                }
+            }
+
+            // ── Multiple matches: show list, read selection ────────────────────
+            _ => {
+                show_list(&matched, &current_query, cfg);
+
+                match pick_loop(&matched, cfg)? {
+                    PickAction::NewSearch(new_query) => {
+                        current_query = new_query;
+                        continue;
+                    }
+
+                    PickAction::Quit => {
+                        break;
+                    }
+                }
             }
         }
 
-        // ── Multiple matches: show list, read selection ────────────────────
-        _ => {
-            show_list(&matched, pattern, cfg);
-            pick_loop(&matched, force_regex, cfg)?;
+        // prompt after single/no result too
+        print!("{} ", colorize("Search (x/q to quit):", &cfg.prompt_color));
+
+        io::stdout().flush()?;
+
+        let mut line = String::new();
+
+        io::stdin().read_line(&mut line)?;
+
+        let input = line.trim();
+
+        if input.is_empty() {
+            continue;
         }
+
+        if matches!(input.to_lowercase().as_str(), "x" | "q" | "exit" | "quit") {
+            break;
+        }
+
+        current_query = input.to_string();
     }
 
     Ok(())
@@ -131,8 +188,8 @@ fn show_list(windows: &[&WindowInfo], query: &str, cfg: &Config) {
         //    doc_color (part1)         app_color     user_color (part3)
         let title_colored = match win.title.rfind(" - ") {
             Some(pos) => {
-                let doc      = colorize(&win.title[..pos], &cfg.doc_color);
-                let sep      = colorize(" - ", &cfg.index_color);
+                let doc = colorize(&win.title[..pos], &cfg.doc_color);
+                let sep = colorize(" - ", &cfg.index_color);
                 let app_full = &win.title[pos + 3..];
 
                 // Detect a trailing "(Something)" user tag
@@ -166,60 +223,85 @@ fn show_list(windows: &[&WindowInfo], query: &str, cfg: &Config) {
     println!();
 }
 
-/// Read one line from stdin and dispatch: number, [n]c, new search, or quit.
-fn pick_loop(windows: &[&WindowInfo], force_regex: bool, cfg: &Config) -> Result<()> {
+/// Read one line from stdin and dispatch:
+///   number -> focus
+///   [n]c   -> close
+///   text   -> new search
+///   x/q    -> quit
+fn pick_loop(windows: &[&WindowInfo], cfg: &Config) -> Result<PickAction> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
 
     loop {
-        print!("{} ", colorize(&format!("Select 1-{}:", windows.len()), &cfg.prompt_color));
+        print!(
+            "{} ",
+            colorize(&format!("Select 1-{}:", windows.len()), &cfg.prompt_color)
+        );
+
         stdout.flush()?;
 
         let mut line = String::new();
+
         stdin.lock().read_line(&mut line)?;
+
         let input = line.trim();
 
-        if input.is_empty() { continue; }
+        if input.is_empty() {
+            continue;
+        }
 
         // quit
         if matches!(input.to_lowercase().as_str(), "x" | "q" | "exit" | "quit") {
-            return Ok(());
+            return Ok(PickAction::Quit);
         }
 
-        // [n]c → close
+        // [n]c -> close
         if let Some(num_str) = input.strip_suffix('c').or_else(|| input.strip_suffix('C')) {
             if let Ok(n) = num_str.trim().parse::<usize>() {
                 if n >= 1 && n <= windows.len() {
                     let win = windows[n - 1];
+
                     match close_window(win) {
-                        Ok(())  => print_success(&format!("{} closed.", win.title), cfg),
-                        Err(e)  => print_error(&format!("Failed to close: {}", e), cfg),
+                        Ok(()) => {
+                            print_success(&format!("{} closed.", win.title), cfg);
+                        }
+
+                        Err(e) => {
+                            print_error(&format!("Failed to close: {}", e), cfg);
+                        }
                     }
                 } else {
                     print_error(&format!("Invalid: enter 1-{}.", windows.len()), cfg);
-                    continue;
                 }
-                return Ok(());
+
+                // stay in same list
+                continue;
             }
         }
 
-        // plain number → focus
+        // plain number -> focus
         if let Ok(n) = input.parse::<usize>() {
             if n >= 1 && n <= windows.len() {
                 let win = windows[n - 1];
+
                 match bring_to_front(win) {
-                    Ok(())  => print_success(&format!("{} brought to the front.", win.title), cfg),
-                    Err(e)  => print_error(&format!("Failed: {}", e), cfg),
+                    Ok(()) => {
+                        print_success(&format!("{} brought to the front.", win.title), cfg);
+                    }
+
+                    Err(e) => {
+                        print_error(&format!("Failed: {}", e), cfg);
+                    }
                 }
             } else {
                 print_error(&format!("Invalid: enter 1-{}.", windows.len()), cfg);
-                continue;
             }
-            return Ok(());
+
+            // stay in same list
+            continue;
         }
 
-        // anything else → new search with that text
-        run(input, force_regex, cfg)?;
-        return Ok(());
+        // anything else -> new search
+        return Ok(PickAction::NewSearch(input.to_string()));
     }
 }

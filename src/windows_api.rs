@@ -20,8 +20,7 @@ mod platform {
     use std::os::windows::ffi::OsStringExt;
     use windows::Win32::Foundation::{BOOL, HWND, LPARAM, WPARAM};
     use windows::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetWindowTextW, IsWindowVisible,
-        SetForegroundWindow, ShowWindow, SW_RESTORE,
+        EnumWindows, GetWindowTextW, IsWindowVisible, SetForegroundWindow, ShowWindow, SW_RESTORE,
     };
 
     // Fixed 512-wchar stack buffer — avoids GetWindowTextLengthW entirely.
@@ -107,20 +106,41 @@ mod platform {
         // On non-Windows, return a synthetic list so tests can exercise
         // the search / coloring logic without a real display.
         Ok(vec![
-            WindowInfo { hwnd: 1, title: "Firefox — GitHub".into() },
-            WindowInfo { hwnd: 2, title: "Visual Studio Code".into() },
-            WindowInfo { hwnd: 3, title: "Windows Terminal".into() },
-            WindowInfo { hwnd: 4, title: "Notepad — readme.txt".into() },
-            WindowInfo { hwnd: 5, title: "Task Manager".into() },
+            WindowInfo {
+                hwnd: 1,
+                title: "Firefox — GitHub".into(),
+            },
+            WindowInfo {
+                hwnd: 2,
+                title: "Visual Studio Code".into(),
+            },
+            WindowInfo {
+                hwnd: 3,
+                title: "Windows Terminal".into(),
+            },
+            WindowInfo {
+                hwnd: 4,
+                title: "Notepad — readme.txt".into(),
+            },
+            WindowInfo {
+                hwnd: 5,
+                title: "Task Manager".into(),
+            },
         ])
     }
 
     pub fn bring_to_front(info: &WindowInfo) -> Result<()> {
-        bail!("bring_to_front is not supported on this platform (hwnd={})", info.hwnd);
+        bail!(
+            "bring_to_front is not supported on this platform (hwnd={})",
+            info.hwnd
+        );
     }
 
     pub fn close_window(info: &WindowInfo) -> Result<()> {
-        bail!("close_window is not supported on this platform (hwnd={})", info.hwnd);
+        bail!(
+            "close_window is not supported on this platform (hwnd={})",
+            info.hwnd
+        );
     }
 }
 

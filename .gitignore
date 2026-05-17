@@ -12,3 +12,12 @@ PLAN.md
 
 # Ignore Sublime Text project files
 *.sublime-*
+
+# Added entries (1 items)
+*.bak
+
+# Added entries (1 items)
+gitignore_backup/
+
+# Added entries (1 items)
+tmp*
