@@ -34,8 +34,8 @@ use windows_api::{bring_to_front, close_window, enumerate_windows, WindowInfo};
     Searches visible window titles. If one match: focus immediately.\n\
     If multiple: show list, pick a number.\n\n\
     After list is shown:\n\
-      <number>   focus that window\n\
-      <n>c       close window n (e.g. 2c)\n\
+      <number>   focus that window (then quit)\n\
+      <n>c       close window n   (then quit)\n\
       <text>     new search\n\
       x / q      quit\n\n\
     Homepage: https://github.com/cumulus13/showit"
@@ -112,18 +112,15 @@ fn run(pattern: &str, force_regex: bool, cfg: &Config) -> Result<()> {
                 );
             }
 
-            // ── Single match: focus and done (exact original behaviour) ───────
+            // ── Single match: focus and quit ──────────────────────────────────
             1 => {
                 let win = matched[0];
-
                 match bring_to_front(win) {
-                    Ok(()) => {
-                        print_success(&format!("{} brought to the front.", win.title), cfg);
-                    }
-                    Err(e) => {
-                        print_error(&format!("Failed: {}", e), cfg);
-                    }
+                    Ok(()) => print_success(&format!("{} brought to the front.", win.title), cfg),
+                    Err(e) => print_error(&format!("Failed: {}", e), cfg),
                 }
+                // Action taken → quit
+                return Ok(());
             }
 
             // ── Multiple matches: show list, read selection ────────────────────
@@ -135,23 +132,17 @@ fn run(pattern: &str, force_regex: bool, cfg: &Config) -> Result<()> {
                         current_query = new_query;
                         continue;
                     }
-
-                    PickAction::Quit => {
-                        break;
-                    }
+                    PickAction::Quit => return Ok(()),
                 }
             }
         }
 
-        // prompt after single/no result too
+        // After no-match: prompt for a new search or quit
         print!("{} ", colorize("Search (x/q to quit):", &cfg.prompt_color));
-
         io::stdout().flush()?;
 
         let mut line = String::new();
-
         io::stdin().read_line(&mut line)?;
-
         let input = line.trim();
 
         if input.is_empty() {
@@ -168,25 +159,27 @@ fn run(pattern: &str, force_regex: bool, cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-/// Print the numbered, colored window list.
-/// Each title is split on the LAST " - ":
-///   left  (document/file path) → cycling palette color per entry
-///   right (app name)           → fixed app_color from config
-fn show_list(windows: &[&WindowInfo], query: &str, cfg: &Config) {
-    println!(
-        "\n{} windows match '{}':\n",
-        colorize(&windows.len().to_string(), &cfg.index_color),
-        colorize(query, &cfg.match_color)
-    );
-
-    for (i, win) in windows.iter().enumerate() {
-        let index = colorize(&format!("{:>3}.", i + 1), &cfg.index_color);
-
-        // Split title into up to 3 fixed-color parts:
-        //   "C:\path\file (project) - Sublime Text (ADMIN)"
-        //    ^^^^^^^^^^^^^^^^^^^^^^    ^^^^^^^^^^^^  ^^^^^^^
-        //    doc_color (part1)         app_color     user_color (part3)
-        let title_colored = match win.title.rfind(" - ") {
+/// Format a single window entry for the list.
+///
+/// For windows whose title is unreliable (e.g. `wt`, `pwsh`, `vim`) the
+/// type label is shown prominently on the left; the raw title becomes a
+/// secondary "subtitle" in the index colour so the user can still
+/// distinguish tabs / sessions:
+///
+///   `  3.  [Windows Terminal]  my-project`
+///
+/// For normal windows the existing doc / app / user split is kept:
+///
+///   `  3.  readme.txt - Notepad`
+fn format_entry(win: &WindowInfo, cfg: &Config) -> String {
+    if win.title_is_unreliable() {
+        let label = win.type_label();
+        let type_part = colorize(&format!("[{}]", label), &cfg.app_color);
+        let title_part = colorize(&win.title, &cfg.index_color);
+        format!("{}  {}", type_part, title_part)
+    } else {
+        // Original doc / app / user split on the LAST " - "
+        match win.title.rfind(" - ") {
             Some(pos) => {
                 let doc = colorize(&win.title[..pos], &cfg.doc_color);
                 let sep = colorize(" - ", &cfg.index_color);
@@ -208,15 +201,29 @@ fn show_list(windows: &[&WindowInfo], query: &str, cfg: &Config) {
                 format!("{}{}{}", doc, sep, app_colored)
             }
             None => colorize(&win.title, &cfg.doc_color),
-        };
-
-        println!("{}  {}", index, title_colored);
+        }
     }
+}
+
+/// Print the numbered, colored window list.
+fn show_list(windows: &[&WindowInfo], query: &str, cfg: &Config) {
+    println!(
+        "\n{} windows match '{}':\n",
+        colorize(&windows.len().to_string(), &cfg.index_color),
+        colorize(query, &cfg.match_color)
+    );
+
+    for (i, win) in windows.iter().enumerate() {
+        let index = colorize(&format!("{:>3}.", i + 1), &cfg.index_color);
+        let entry = format_entry(win, cfg);
+        println!("{}  {}", index, entry);
+    }
+
     println!();
     println!(
         "{}",
         colorize(
-            "  [number] focus   [n]c close   [text] new search   x quit",
+            "  [number] focus (quit)   [n]c close (quit)   [text] new search   x quit",
             &cfg.index_color
         )
     );
@@ -224,10 +231,10 @@ fn show_list(windows: &[&WindowInfo], query: &str, cfg: &Config) {
 }
 
 /// Read one line from stdin and dispatch:
-///   number -> focus
-///   [n]c   -> close
-///   text   -> new search
-///   x/q    -> quit
+///   number   → focus → **Quit**
+///   [n]c     → close → **Quit**
+///   text     → NewSearch
+///   x/q      → Quit
 fn pick_loop(windows: &[&WindowInfo], cfg: &Config) -> Result<PickAction> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -255,53 +262,41 @@ fn pick_loop(windows: &[&WindowInfo], cfg: &Config) -> Result<PickAction> {
             return Ok(PickAction::Quit);
         }
 
-        // [n]c -> close
+        // [n]c → close → quit
         if let Some(num_str) = input.strip_suffix('c').or_else(|| input.strip_suffix('C')) {
             if let Ok(n) = num_str.trim().parse::<usize>() {
                 if n >= 1 && n <= windows.len() {
                     let win = windows[n - 1];
 
                     match close_window(win) {
-                        Ok(()) => {
-                            print_success(&format!("{} closed.", win.title), cfg);
-                        }
-
-                        Err(e) => {
-                            print_error(&format!("Failed to close: {}", e), cfg);
-                        }
+                        Ok(()) => print_success(&format!("{} closed.", win.title), cfg),
+                        Err(e) => print_error(&format!("Failed to close: {}", e), cfg),
                     }
                 } else {
                     print_error(&format!("Invalid: enter 1-{}.", windows.len()), cfg);
+                    continue; // bad number: re-prompt
                 }
-
-                // stay in same list
-                continue;
+                return Ok(PickAction::Quit); // ← quit after close
             }
+            // suffix 'c' but non-numeric prefix → fall through to NewSearch
         }
 
-        // plain number -> focus
+        // plain number → focus → quit
         if let Ok(n) = input.parse::<usize>() {
             if n >= 1 && n <= windows.len() {
                 let win = windows[n - 1];
-
                 match bring_to_front(win) {
-                    Ok(()) => {
-                        print_success(&format!("{} brought to the front.", win.title), cfg);
-                    }
-
-                    Err(e) => {
-                        print_error(&format!("Failed: {}", e), cfg);
-                    }
+                    Ok(()) => print_success(&format!("{} brought to the front.", win.title), cfg),
+                    Err(e) => print_error(&format!("Failed: {}", e), cfg),
                 }
+                return Ok(PickAction::Quit); // ← quit after focus
             } else {
                 print_error(&format!("Invalid: enter 1-{}.", windows.len()), cfg);
+                continue; // bad number: re-prompt
             }
-
-            // stay in same list
-            continue;
         }
 
-        // anything else -> new search
+        // anything else → new search
         return Ok(PickAction::NewSearch(input.to_string()));
     }
 }
