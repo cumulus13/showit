@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `--list` / `-l` flag was missing from the CLI (regression — it was documented in the README/CHANGELOG but never implemented in `Args`), so `showit --list` failed with an argument error and `PATTERN` was always required.
+- Colored output printed raw ANSI escape codes instead of colors when run from plain `cmd.exe` (Windows Terminal/PowerShell enable VT processing by default; legacy `cmd.exe` does not). Now enabled explicitly at startup via `colored::control::set_virtual_terminal(true)`.
+- Window list would include showit's own console/host window (e.g. when the query matched the console's title, such as "cmd" or the current directory), since `enumerate_windows()` never excluded it. Now filtered out via `GetConsoleWindow()`.
+
 ## [0.1.0] — 2025-12-15
 
 ### Added

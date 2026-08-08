@@ -138,6 +138,7 @@ mod platform {
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
     use windows::Win32::Foundation::{BOOL, HWND, LPARAM, WPARAM};
+    use windows::Win32::System::Console::GetConsoleWindow;
     use windows::Win32::System::Threading::{
         AttachThreadInput, GetCurrentThreadId, OpenProcess, QueryFullProcessImageNameW,
         PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -209,6 +210,16 @@ mod platform {
 
         // Skip invisible windows fast — no message send needed
         if !IsWindowVisible(hwnd).as_bool() {
+            return BOOL(1);
+        }
+
+        // Skip our own console/host window. GetConsoleWindow() returns the
+        // HWND of the console we (showit) are attached to — under cmd.exe
+        // this is the same window the user typed the command into, so
+        // without this check showit would list itself whenever the query
+        // matched the console's own title (e.g. "cmd", the current
+        // directory, or a custom prompt title).
+        if hwnd == GetConsoleWindow() {
             return BOOL(1);
         }
 
