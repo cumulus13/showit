@@ -22,7 +22,9 @@ use config::Config;
 use display::{colorize, print_error, print_success};
 use search::{detect_mode, filter_windows};
 use std::io::{self, BufRead, Write};
-use windows_api::{bring_to_front, close_window, enumerate_windows, WindowInfo};
+use windows_api::{
+    bring_to_front, close_window, enumerate_windows, run_delayed_raise_and_exit, WindowInfo,
+};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -65,6 +67,19 @@ enum PickAction {
 
 fn main() -> Result<()> {
     let os_args: Vec<String> = std::env::args().collect();
+
+    // Hidden internal entry point: bring_to_front() re-execs itself as
+    // `showit --__raise <hwnd>`, detached and delayed, so the actual raise
+    // happens *after* the parent console (conhost) has already reclaimed
+    // its own foreground on exit. See windows_api::bring_to_front for the
+    // full explanation. Not a documented/public flag — never returns.
+    if os_args.len() == 3 && os_args[1] == "--__raise" {
+        if let Ok(hwnd) = os_args[2].parse::<usize>() {
+            run_delayed_raise_and_exit(hwnd);
+        }
+        std::process::exit(1);
+    }
+
     if os_args.len() == 2 && (os_args[1] == "-V" || os_args[1] == "--version") {
         let version = colorful_version!();
         version.print_and_exit();

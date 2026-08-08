@@ -248,6 +248,85 @@ mod platform {
 
     /// Bring a window to the foreground **without changing its show-state**.
     ///
+    /// Public entry point called from `main.rs` right after a window is
+    /// picked. On Windows this does **not** raise the window synchronously
+    /// in this process. Instead it spawns a short-lived, fully detached
+    /// helper (`showit.exe --__raise <hwnd>`) that sleeps briefly and then
+    /// performs the raise. See `spawn_delayed_raise` for why.
+    ///
+    /// If spawning the helper fails for any reason, falls back to raising
+    /// synchronously in this process (the old behaviour) as a best effort.
+    pub fn bring_to_front(info: &WindowInfo) -> Result<()> {
+        if spawn_delayed_raise(info.hwnd).is_ok() {
+            return Ok(());
+        }
+        raise_now(HWND(info.hwnd as isize), &info.title)
+    }
+
+    /// Spawn `showit.exe --__raise <hwnd>` as a fully independent,
+    /// windowless, detached process and return immediately without
+    /// waiting on it.
+    ///
+    /// ## Why this exists
+    ///
+    /// Plain `cmd.exe` / PowerShell consoles are each owned by their own
+    /// `conhost.exe` window (`ConsoleWindowClass`). The instant a child
+    /// process (this program) exits and control returns to the prompt,
+    /// conhost calls `SetForegroundWindow` on **its own window** so the
+    /// prompt is ready for input again. If we raise the target window
+    /// synchronously and then exit, that reclaim happens a moment later
+    /// and silently undoes our raise — the target flashes to the front
+    /// and the console snaps right back (reported as "output still shows
+    /// itself"). Worse, because that reclaim races against our
+    /// `AttachThreadInput` + `SetWindowPos` sequence while the previous
+    /// foreground owner is mid-teardown, Windows' "nobody currently holds
+    /// the foreground lock" fallback can hand the target *real* activation
+    /// despite `SWP_NOACTIVATE` (reported as "focus stays on the raised
+    /// window"). Both symptoms are the same race.
+    ///
+    /// Windows Terminal doesn't hit this because the shell runs over a
+    /// ConPTY hosted *inside WT's own window* — there is no separate
+    /// conhost window contesting the foreground, so the synchronous path
+    /// already worked fine there.
+    ///
+    /// The fix is to not fight that race: deliberately act **after** it.
+    /// The helper process sleeps ~220ms — long enough for this process to
+    /// have fully exited and for conhost to have already reclaimed its own
+    /// foreground unambiguously — and only then performs the exact same
+    /// `NOACTIVATE` raise. By that point there's no contested/unsettled
+    /// foreground state left for Windows to "help" us activate, so the
+    /// raise lands purely as a Z-order/visibility change, exactly as
+    /// intended.
+    ///
+    /// The helper is spawned with `CREATE_NO_WINDOW` and no inherited
+    /// stdio so it never itself flashes a console window.
+    fn spawn_delayed_raise(hwnd: usize) -> Result<()> {
+        use std::os::windows::process::CommandExt;
+        use std::process::{Command, Stdio};
+
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+        let exe = std::env::current_exe()?;
+        Command::new(exe)
+            .arg("--__raise")
+            .arg(hwnd.to_string())
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+        Ok(())
+    }
+
+    /// Entry point for the hidden `--__raise <hwnd>` helper invocation
+    /// (see `spawn_delayed_raise`). Sleeps briefly, performs the raise,
+    /// then exits. Never returns.
+    pub fn run_delayed_raise_and_exit(hwnd: usize) -> ! {
+        std::thread::sleep(std::time::Duration::from_millis(220));
+        let _ = raise_now(HWND(hwnd as isize), "");
+        std::process::exit(0);
+    }
+
     /// Algorithm (mirrors the Python reference implementation):
     ///
     /// 1. Snapshot `WINDOWPLACEMENT` so we know the current `showCmd`.
@@ -262,9 +341,7 @@ mod platform {
     ///    position/size are exactly as before.  If it **was** maximised, skip
     ///    `SetWindowPlacement` — calling it on a maximised window forces it back
     ///    to restored size, which is the bug we are fixing.
-    pub fn bring_to_front(info: &WindowInfo) -> Result<()> {
-        let hwnd = HWND(info.hwnd as isize);
-
+    fn raise_now(hwnd: HWND, title: &str) -> Result<()> {
         unsafe {
             // ── 1. Snapshot current placement ────────────────────────────────
             let mut wp = WINDOWPLACEMENT {
@@ -272,7 +349,7 @@ mod platform {
                 ..Default::default()
             };
             if GetWindowPlacement(hwnd, &mut wp).is_err() {
-                bail!("GetWindowPlacement failed for '{}'", info.title);
+                bail!("GetWindowPlacement failed for '{}'", title);
             }
             let original_show_cmd = wp.showCmd;
 
@@ -416,8 +493,21 @@ mod platform {
             info.hwnd
         );
     }
+
+    /// Non-Windows stub for the hidden `--__raise` helper entry point.
+    /// This codepath only ever runs on Windows in practice; kept here so
+    /// the crate still compiles on Linux/macOS CI.
+    pub fn run_delayed_raise_and_exit(hwnd: usize) -> ! {
+        eprintln!(
+            "raise is not supported on this platform (hwnd={})",
+            hwnd
+        );
+        std::process::exit(1);
+    }
 }
 
 // ─── Public re-exports ─────────────────────────────────────────────────────
 
-pub use platform::{bring_to_front, close_window, enumerate_windows};
+pub use platform::{
+    bring_to_front, close_window, enumerate_windows, run_delayed_raise_and_exit,
+};
