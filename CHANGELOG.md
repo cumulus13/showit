@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Focus didn't actually switch when showit was launched from `cmd.exe`** (worked fine from Windows Terminal). The old `bring_to_front` deliberately used `SW_SHOWNA`/`SWP_NOACTIVATE` — it never called `SetForegroundWindow` at all, only reordered z-order. Fixed by actually calling `SetForegroundWindow`/`BringWindowToTop`, satisfied via `AttachThreadInput` to the current foreground thread (already the right sequence for this), with a minimize/restore fallback for stubborn cases (e.g. elevated targets).
+  - v1 of this fix used a synthetic ALT keypress to satisfy the foreground lock; removed after it caused focus to snap back (the synthetic keyup landed on the newly-foregrounded window). v2 had a build-breaking typo (`SW_MINIMIZE` used but not imported). Both fixed.
+- `--list` / `-l` flag was missing from the CLI (regression — it was documented in the README/CHANGELOG but never implemented in `Args`), so `showit --list` failed with an argument error and `PATTERN` was always required.
+- Colored output printed raw ANSI escape codes instead of colors when run from plain `cmd.exe` (Windows Terminal/PowerShell enable VT processing by default; legacy `cmd.exe` does not). Now enabled explicitly at startup via `colored::control::set_virtual_terminal(true)`.
+- Window list would include showit's own console/host window (e.g. when the query matched the console's title, such as "cmd" or the current directory), since `enumerate_windows()` never excluded it. Now filtered out via `GetConsoleWindow()`.
+
 ## [0.1.0] — 2025-12-15
 
 ### Added

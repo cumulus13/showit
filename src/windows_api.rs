@@ -138,16 +138,17 @@ mod platform {
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
     use windows::Win32::Foundation::{BOOL, HWND, LPARAM, WPARAM};
+    use windows::Win32::System::Console::GetConsoleWindow;
     use windows::Win32::System::Threading::{
         AttachThreadInput, GetCurrentThreadId, OpenProcess, QueryFullProcessImageNameW,
         PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
     };
 
     use windows::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowPlacement, GetWindowTextW,
-        GetWindowThreadProcessId, IsIconic, IsWindowVisible, SetWindowPos, ShowWindow, HWND_TOP,
-        SET_WINDOW_POS_FLAGS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE,
-        SWP_SHOWWINDOW, SW_MAXIMIZE, SW_SHOWNA, SW_SHOWNOACTIVATE, WINDOWPLACEMENT,
+        BringWindowToTop, EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowPlacement,
+        GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, SetForegroundWindow,
+        SetWindowPos, ShowWindow, HWND_TOP, SET_WINDOW_POS_FLAGS, SWP_NOMOVE, SWP_NOOWNERZORDER,
+        SWP_NOSIZE, SWP_SHOWWINDOW, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE, SW_SHOW, WINDOWPLACEMENT,
     };
 
     // Fixed 512-wchar stack buffer — avoids GetWindowTextLengthW entirely.
@@ -212,6 +213,16 @@ mod platform {
             return BOOL(1);
         }
 
+        // Skip our own console/host window. GetConsoleWindow() returns the
+        // HWND of the console we (showit) are attached to — under cmd.exe
+        // this is the same window the user typed the command into, so
+        // without this check showit would list itself whenever the query
+        // matched the console's own title (e.g. "cmd", the current
+        // directory, or a custom prompt title).
+        if hwnd == GetConsoleWindow() {
+            return BOOL(1);
+        }
+
         // Stack-allocated buffer: no heap alloc per window
         let mut buf = [0u16; BUF_LEN];
         let written = GetWindowTextW(hwnd, &mut buf);
@@ -246,22 +257,37 @@ mod platform {
         Ok(windows)
     }
 
-    /// Bring a window to the foreground **without changing its show-state**.
+    /// Bring a window to the foreground and give it real input focus.
     ///
-    /// Algorithm (mirrors the Python reference implementation):
+    /// Algorithm:
     ///
     /// 1. Snapshot `WINDOWPLACEMENT` so we know the current `showCmd`.
     /// 2. Attach our input queue to the foreground thread (and the target
-    ///    thread) so the OS foreground lock cannot block us.
-    /// 3. If the window is iconic (minimised) → `SW_SHOWNOACTIVATE` (4).
-    ///    Otherwise → `SW_SHOWNA` (8) — make it visible without stealing focus.
-    /// 4. `SetWindowPos(..., HWND_TOP, SWP_NOSIZE|SWP_NOMOVE|SWP_NOACTIVATE|...)`
-    ///    raises the Z-order without moving/resizing/activating the window.
+    ///    thread). This is what actually satisfies Windows' foreground
+    ///    lock: once our thread shares an input queue with whichever
+    ///    thread currently owns the foreground window, `SetForegroundWindow`
+    ///    is allowed to succeed for us too — no synthetic input events
+    ///    needed. (An earlier version of this function used a synthetic
+    ///    ALT keypress instead; releasing that keyup *after* the target
+    ///    already had focus could land on the newly-foregrounded window
+    ///    and bounce focus straight back. Removed.)
+    /// 3. If the window is iconic (minimised) → `SW_RESTORE`. Otherwise
+    ///    → `SW_SHOW`. Both activate the window (unlike the old
+    ///    `SW_SHOWNA`/`SW_SHOWNOACTIVATE`, which deliberately never did).
+    /// 4. `BringWindowToTop` + `SetForegroundWindow`. If that still didn't
+    ///    land focus (e.g. blocked by UIPI when the target is an elevated
+    ///    process we're not), fall back to the minimize/restore trick,
+    ///    which is exempt from the foreground lock. Either way, finish
+    ///    with a plain `SetWindowPos(HWND_TOP)` so the window is at least
+    ///    visually raised even if focus genuinely can't transfer.
     /// 5. Detach input queues (always, even on error).
-    /// 6. If the window was **not** maximised, restore the original placement so
-    ///    position/size are exactly as before.  If it **was** maximised, skip
-    ///    `SetWindowPlacement` — calling it on a maximised window forces it back
-    ///    to restored size, which is the bug we are fixing.
+    /// 6. If the window was **not** maximised and was **not** minimised,
+    ///    restore the original placement so position/size are exactly as
+    ///    before. Skip it when maximised (`SetWindowPlacement` would force
+    ///    it back to restored size) and skip it when it was minimised
+    ///    (the snapshot still has the old minimised `showCmd`, and
+    ///    replaying it would immediately re-minimise the window we just
+    ///    restored and activated).
     pub fn bring_to_front(info: &WindowInfo) -> Result<()> {
         let hwnd = HWND(info.hwnd as isize);
 
@@ -275,6 +301,7 @@ mod platform {
                 bail!("GetWindowPlacement failed for '{}'", info.title);
             }
             let original_show_cmd = wp.showCmd;
+            let was_iconic = IsIconic(hwnd).as_bool();
 
             // ── 2. Attach input queues ────────────────────────────────────────
             let our_tid = GetCurrentThreadId();
@@ -291,17 +318,46 @@ mod platform {
                 && target_tid != fg_tid
                 && AttachThreadInput(our_tid, target_tid, true).as_bool();
 
-            // ── 3 & 4. Show without activating, then raise Z-order ───────────
+            // ── 3 & 4. Actually activate and raise the window ─────────────────
+            // NOTE: an earlier version of this synthesized an ALT keypress
+            // around SetForegroundWindow to satisfy Windows' foreground
+            // lock. That's a known trick, but releasing the synthetic Alt
+            // *after* the target already had focus meant that keyup landed
+            // on the newly-foregrounded window/shell — which several apps
+            // interpret as "open menu" / "return focus", visibly snapping
+            // focus back. Removed. AttachThreadInput (already done above,
+            // *before* this point) is the clean way to satisfy the
+            // foreground lock: once our thread shares an input queue with
+            // the current foreground thread, SetForegroundWindow succeeds
+            // without injecting any real input events into the system.
             let show_result = (|| -> Result<()> {
-                if IsIconic(hwnd).as_bool() {
-                    // Minimised → show without activating
-                    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                if was_iconic {
+                    ShowWindow(hwnd, SW_RESTORE);
                 } else {
-                    // Normal or Maximised → ensure visible without focus
-                    ShowWindow(hwnd, SW_SHOWNA);
+                    ShowWindow(hwnd, SW_SHOW);
                 }
 
-                SetWindowPos(
+                let _ = BringWindowToTop(hwnd);
+                let activated = SetForegroundWindow(hwnd).as_bool()
+                    && GetForegroundWindow() == hwnd;
+
+                if !activated {
+                    // Fallback for the rare case the above still wasn't
+                    // enough: minimizing then immediately restoring a
+                    // window is exempt from the foreground lock (a
+                    // long-documented Windows quirk), so it reliably forces
+                    // the window forward with real focus as a side effect.
+                    ShowWindow(hwnd, SW_MINIMIZE);
+                    ShowWindow(hwnd, SW_RESTORE);
+                    let _ = BringWindowToTop(hwnd);
+                    let _ = SetForegroundWindow(hwnd);
+                }
+
+                // Always raise z-order too, regardless of activation
+                // outcome above — cheap, harmless, and covers edge cases
+                // (e.g. an elevated/admin target UIPI blocks activation
+                // for) where focus can't transfer but visibility still can.
+                let _ = SetWindowPos(
                     hwnd,
                     HWND_TOP,
                     0,
@@ -311,11 +367,10 @@ mod platform {
                     SET_WINDOW_POS_FLAGS(
                         SWP_NOSIZE.0
                             | SWP_NOMOVE.0
-                            | SWP_NOACTIVATE.0
                             | SWP_NOOWNERZORDER.0
                             | SWP_SHOWWINDOW.0,
                     ),
-                )?;
+                );
 
                 Ok(())
             })();
@@ -330,10 +385,9 @@ mod platform {
 
             show_result?;
 
-            // ── 6. Restore placement only when NOT maximised ──────────────────
-            // Calling SetWindowPlacement on a maximised window forces it to
-            // restored size — exactly the bug reported.  Skip it in that case.
-            if original_show_cmd != SW_MAXIMIZE.0 as u32 {
+            // ── 6. Restore placement only when NOT maximised and NOT
+            //       previously minimised ─────────────────────────────────────
+            if original_show_cmd != SW_MAXIMIZE.0 as u32 && !was_iconic {
                 // best-effort; ignore errors (window may have moved legitimately)
                 let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowPlacement(hwnd, &wp);
             }
