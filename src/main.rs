@@ -42,11 +42,16 @@ use windows_api::{bring_to_front, close_window, enumerate_windows, WindowInfo};
 )]
 struct Args {
     /// Window title pattern (substring / wildcard * / regex with -r)
-    pattern: String,
+    /// Optional when --list, --config-path, or --init-config is given.
+    pattern: Option<String>,
 
     /// Treat pattern as a regular expression
     #[arg(short, long)]
     regex: bool,
+
+    /// List all visible windows
+    #[arg(short, long)]
+    list: bool,
 
     /// Print the config file path and exit
     #[arg(long)]
@@ -64,6 +69,16 @@ enum PickAction {
 }
 
 fn main() -> Result<()> {
+    // Legacy cmd.exe (unlike Windows Terminal / PowerShell) does not enable
+    // ANSI/VT processing by default, so the `colored` crate's escape codes
+    // were printed as raw garbage (e.g. "←[38;2;...m") instead of colors.
+    // This turns VT processing on for our stdout handle; harmless no-op on
+    // non-Windows and on terminals that already have it enabled.
+    #[cfg(windows)]
+    {
+        let _ = colored::control::set_virtual_terminal(true);
+    }
+
     let os_args: Vec<String> = std::env::args().collect();
     if os_args.len() == 2 && (os_args[1] == "-V" || os_args[1] == "--version") {
         let version = colorful_version!();
@@ -87,7 +102,26 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    run(&args.pattern, args.regex, &cfg)
+    if args.list {
+        // Empty-string substring query matches every window, so this
+        // reuses the normal search/interactive-pick flow to show *all*
+        // currently visible windows (our own console window is already
+        // excluded by enumerate_windows()).
+        return run("", args.regex, &cfg);
+    }
+
+    let pattern = match &args.pattern {
+        Some(p) => p,
+        None => {
+            print_error(
+                "No pattern given. Pass a PATTERN to search for, or use --list to show all windows.",
+                &cfg,
+            );
+            std::process::exit(2);
+        }
+    };
+
+    run(pattern, args.regex, &cfg)
 }
 
 fn run(pattern: &str, force_regex: bool, cfg: &Config) -> Result<()> {
