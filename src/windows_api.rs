@@ -138,16 +138,19 @@ mod platform {
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
     use windows::Win32::Foundation::{BOOL, HWND, LPARAM, WPARAM};
+    use windows::Win32::System::Console::GetConsoleWindow;
     use windows::Win32::System::Threading::{
         AttachThreadInput, GetCurrentThreadId, OpenProcess, QueryFullProcessImageNameW,
         PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
     };
 
+    use windows::Win32::UI::Input::KeyboardAndMouse::{keybd_event, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VK_MENU};
     use windows::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowPlacement, GetWindowTextW,
-        GetWindowThreadProcessId, IsIconic, IsWindowVisible, SetWindowPos, ShowWindow, HWND_TOP,
-        SET_WINDOW_POS_FLAGS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE,
-        SWP_SHOWWINDOW, SW_MAXIMIZE, SW_SHOWNA, SW_SHOWNOACTIVATE, WINDOWPLACEMENT,
+        BringWindowToTop, EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowPlacement,
+        GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, SetForegroundWindow,
+        SetWindowPos, ShowWindow, HWND_TOP, SET_WINDOW_POS_FLAGS, SWP_NOACTIVATE, SWP_NOMOVE,
+        SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_SHOWWINDOW, SW_MAXIMIZE, SW_RESTORE, SW_SHOW,
+        WINDOWPLACEMENT,
     };
 
     // Fixed 512-wchar stack buffer — avoids GetWindowTextLengthW entirely.
@@ -212,6 +215,16 @@ mod platform {
             return BOOL(1);
         }
 
+        // Skip our own console/host window. GetConsoleWindow() returns the
+        // HWND of the console we (showit) are attached to — under cmd.exe
+        // this is the same window the user typed the command into, so
+        // without this check showit would list itself whenever the query
+        // matched the console's own title (e.g. "cmd", the current
+        // directory, or a custom prompt title).
+        if hwnd == GetConsoleWindow() {
+            return BOOL(1);
+        }
+
         // Stack-allocated buffer: no heap alloc per window
         let mut buf = [0u16; BUF_LEN];
         let written = GetWindowTextW(hwnd, &mut buf);
@@ -246,22 +259,35 @@ mod platform {
         Ok(windows)
     }
 
-    /// Bring a window to the foreground **without changing its show-state**.
+    /// Bring a window to the foreground and give it real input focus.
     ///
-    /// Algorithm (mirrors the Python reference implementation):
+    /// Algorithm:
     ///
     /// 1. Snapshot `WINDOWPLACEMENT` so we know the current `showCmd`.
     /// 2. Attach our input queue to the foreground thread (and the target
-    ///    thread) so the OS foreground lock cannot block us.
-    /// 3. If the window is iconic (minimised) → `SW_SHOWNOACTIVATE` (4).
-    ///    Otherwise → `SW_SHOWNA` (8) — make it visible without stealing focus.
-    /// 4. `SetWindowPos(..., HWND_TOP, SWP_NOSIZE|SWP_NOMOVE|SWP_NOACTIVATE|...)`
-    ///    raises the Z-order without moving/resizing/activating the window.
+    ///    thread) so window/focus state is shared with them.
+    /// 3. If the window is iconic (minimised) → `SW_RESTORE`. Otherwise
+    ///    → `SW_SHOW`. Both activate the window (unlike the old
+    ///    `SW_SHOWNA`/`SW_SHOWNOACTIVATE`, which deliberately never did).
+    /// 4. Synthesize a harmless ALT keypress, then call
+    ///    `SetForegroundWindow`. Windows only grants a foreground switch to
+    ///    a process that "recently received input" — a console child
+    ///    process of `cmd.exe`/`conhost.exe` never satisfies that (conhost,
+    ///    not showit.exe, received the keystrokes), so a plain
+    ///    `SetForegroundWindow` call is silently ignored there even though
+    ///    it succeeds when showit is run from Windows Terminal (which
+    ///    relays that permission to child processes). The synthetic
+    ///    keypress is the standard, widely-used workaround: it makes our
+    ///    thread look like it just received input, so the OS grants the
+    ///    switch regardless of which shell launched us.
     /// 5. Detach input queues (always, even on error).
-    /// 6. If the window was **not** maximised, restore the original placement so
-    ///    position/size are exactly as before.  If it **was** maximised, skip
-    ///    `SetWindowPlacement` — calling it on a maximised window forces it back
-    ///    to restored size, which is the bug we are fixing.
+    /// 6. If the window was **not** maximised and was **not** minimised,
+    ///    restore the original placement so position/size are exactly as
+    ///    before. Skip it when maximised (`SetWindowPlacement` would force
+    ///    it back to restored size) and skip it when it was minimised
+    ///    (the snapshot still has the old minimised `showCmd`, and
+    ///    replaying it would immediately re-minimise the window we just
+    ///    restored and activated).
     pub fn bring_to_front(info: &WindowInfo) -> Result<()> {
         let hwnd = HWND(info.hwnd as isize);
 
@@ -275,6 +301,7 @@ mod platform {
                 bail!("GetWindowPlacement failed for '{}'", info.title);
             }
             let original_show_cmd = wp.showCmd;
+            let was_iconic = IsIconic(hwnd).as_bool();
 
             // ── 2. Attach input queues ────────────────────────────────────────
             let our_tid = GetCurrentThreadId();
@@ -291,31 +318,38 @@ mod platform {
                 && target_tid != fg_tid
                 && AttachThreadInput(our_tid, target_tid, true).as_bool();
 
-            // ── 3 & 4. Show without activating, then raise Z-order ───────────
+            // ── 3 & 4. Actually activate and raise the window ─────────────────
             let show_result = (|| -> Result<()> {
-                if IsIconic(hwnd).as_bool() {
-                    // Minimised → show without activating
-                    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                if was_iconic {
+                    ShowWindow(hwnd, SW_RESTORE);
                 } else {
-                    // Normal or Maximised → ensure visible without focus
-                    ShowWindow(hwnd, SW_SHOWNA);
+                    ShowWindow(hwnd, SW_SHOW);
                 }
 
-                SetWindowPos(
-                    hwnd,
-                    HWND_TOP,
-                    0,
-                    0,
-                    0,
-                    0,
-                    SET_WINDOW_POS_FLAGS(
-                        SWP_NOSIZE.0
-                            | SWP_NOMOVE.0
-                            | SWP_NOACTIVATE.0
-                            | SWP_NOOWNERZORDER.0
-                            | SWP_SHOWWINDOW.0,
-                    ),
-                )?;
+                keybd_event(VK_MENU.0 as u8, 0, KEYBD_EVENT_FLAGS(0), 0);
+                let _ = BringWindowToTop(hwnd);
+                let activated = SetForegroundWindow(hwnd).as_bool();
+                keybd_event(VK_MENU.0 as u8, 0, KEYEVENTF_KEYUP, 0);
+
+                if !activated {
+                    // Fallback: at least raise the z-order even if we
+                    // couldn't steal focus outright.
+                    SetWindowPos(
+                        hwnd,
+                        HWND_TOP,
+                        0,
+                        0,
+                        0,
+                        0,
+                        SET_WINDOW_POS_FLAGS(
+                            SWP_NOSIZE.0
+                                | SWP_NOMOVE.0
+                                | SWP_NOACTIVATE.0
+                                | SWP_NOOWNERZORDER.0
+                                | SWP_SHOWWINDOW.0,
+                        ),
+                    )?;
+                }
 
                 Ok(())
             })();
@@ -330,10 +364,9 @@ mod platform {
 
             show_result?;
 
-            // ── 6. Restore placement only when NOT maximised ──────────────────
-            // Calling SetWindowPlacement on a maximised window forces it to
-            // restored size — exactly the bug reported.  Skip it in that case.
-            if original_show_cmd != SW_MAXIMIZE.0 as u32 {
+            // ── 6. Restore placement only when NOT maximised and NOT
+            //       previously minimised ─────────────────────────────────────
+            if original_show_cmd != SW_MAXIMIZE.0 as u32 && !was_iconic {
                 // best-effort; ignore errors (window may have moved legitimately)
                 let _ = windows::Win32::UI::WindowsAndMessaging::SetWindowPlacement(hwnd, &wp);
             }
