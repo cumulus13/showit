@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.16] — 2026-08-08
+
+### Added
+- `-f, --focus` flag: by default a selected window is only *raised*
+  (Z-order/visibility change, `SWP_NOACTIVATE`) and keyboard focus stays
+  wherever it was. Pass `-f`/`--focus` to actually *activate* the window
+  (`SetForegroundWindow`), stealing input focus the same way Alt-Tab does.
+  Applies to the single-match auto-raise path and to picking a number in the
+  interactive list.
+
+### Changed
+- Clarified `--help` and the in-list hint to distinguish "raise" (default)
+  from "focus" (`-f`).
+
 ## [0.1.0] — 2025-12-15
 
 ### Added

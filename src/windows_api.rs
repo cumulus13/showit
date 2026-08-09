@@ -145,9 +145,10 @@ mod platform {
 
     use windows::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowPlacement, GetWindowTextW,
-        GetWindowThreadProcessId, IsIconic, IsWindowVisible, SetWindowPos, ShowWindow, HWND_TOP,
-        SET_WINDOW_POS_FLAGS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE,
-        SWP_SHOWWINDOW, SW_MAXIMIZE, SW_SHOWNA, SW_SHOWNOACTIVATE, WINDOWPLACEMENT,
+        GetWindowThreadProcessId, IsIconic, IsWindowVisible, SetForegroundWindow, SetWindowPos,
+        ShowWindow, HWND_TOP, SET_WINDOW_POS_FLAGS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER,
+        SWP_NOSIZE, SWP_SHOWWINDOW, SW_MAXIMIZE, SW_RESTORE, SW_SHOW, SW_SHOWNA,
+        SW_SHOWNOACTIVATE, WINDOWPLACEMENT,
     };
 
     // Fixed 512-wchar stack buffer — avoids GetWindowTextLengthW entirely.
@@ -246,21 +247,28 @@ mod platform {
         Ok(windows)
     }
 
-    /// Bring a window to the foreground **without changing its show-state**.
+    /// Bring a window to the foreground.
     ///
     /// Public entry point called from `main.rs` right after a window is
     /// picked. On Windows this does **not** raise the window synchronously
     /// in this process. Instead it spawns a short-lived, fully detached
-    /// helper (`showit.exe --__raise <hwnd>`) that sleeps briefly and then
-    /// performs the raise. See `spawn_delayed_raise` for why.
+    /// helper (`showit.exe --__raise <hwnd> <focus>`) that sleeps briefly
+    /// and then performs the raise. See `spawn_delayed_raise` for why.
+    ///
+    /// `focus` toggles the actual behaviour:
+    ///   - `false` (default): only the window's Z-order/visibility changes
+    ///     (`SW_SHOWNA` + `SWP_NOACTIVATE`) — keyboard focus is left wherever
+    ///     it was.
+    ///   - `true`: the window is also activated (`SetForegroundWindow`),
+    ///     stealing input focus like a normal Alt-Tab switch would.
     ///
     /// If spawning the helper fails for any reason, falls back to raising
     /// synchronously in this process (the old behaviour) as a best effort.
-    pub fn bring_to_front(info: &WindowInfo) -> Result<()> {
-        if spawn_delayed_raise(info.hwnd).is_ok() {
+    pub fn bring_to_front(info: &WindowInfo, focus: bool) -> Result<()> {
+        if spawn_delayed_raise(info.hwnd, focus).is_ok() {
             return Ok(());
         }
-        raise_now(HWND(info.hwnd as isize), &info.title)
+        raise_now(HWND(info.hwnd as isize), &info.title, focus)
     }
 
     /// Spawn `showit.exe --__raise <hwnd>` as a fully independent,
@@ -300,7 +308,7 @@ mod platform {
     ///
     /// The helper is spawned with `CREATE_NO_WINDOW` and no inherited
     /// stdio so it never itself flashes a console window.
-    fn spawn_delayed_raise(hwnd: usize) -> Result<()> {
+    fn spawn_delayed_raise(hwnd: usize, focus: bool) -> Result<()> {
         use std::os::windows::process::CommandExt;
         use std::process::{Command, Stdio};
 
@@ -310,6 +318,7 @@ mod platform {
         Command::new(exe)
             .arg("--__raise")
             .arg(hwnd.to_string())
+            .arg(if focus { "1" } else { "0" })
             .creation_flags(CREATE_NO_WINDOW)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -318,12 +327,12 @@ mod platform {
         Ok(())
     }
 
-    /// Entry point for the hidden `--__raise <hwnd>` helper invocation
-    /// (see `spawn_delayed_raise`). Sleeps briefly, performs the raise,
-    /// then exits. Never returns.
-    pub fn run_delayed_raise_and_exit(hwnd: usize) -> ! {
+    /// Entry point for the hidden `--__raise <hwnd> <focus>` helper
+    /// invocation (see `spawn_delayed_raise`). Sleeps briefly, performs the
+    /// raise, then exits. Never returns.
+    pub fn run_delayed_raise_and_exit(hwnd: usize, focus: bool) -> ! {
         std::thread::sleep(std::time::Duration::from_millis(220));
-        let _ = raise_now(HWND(hwnd as isize), "");
+        let _ = raise_now(HWND(hwnd as isize), "", focus);
         std::process::exit(0);
     }
 
@@ -331,17 +340,25 @@ mod platform {
     ///
     /// 1. Snapshot `WINDOWPLACEMENT` so we know the current `showCmd`.
     /// 2. Attach our input queue to the foreground thread (and the target
-    ///    thread) so the OS foreground lock cannot block us.
-    /// 3. If the window is iconic (minimised) → `SW_SHOWNOACTIVATE` (4).
-    ///    Otherwise → `SW_SHOWNA` (8) — make it visible without stealing focus.
-    /// 4. `SetWindowPos(..., HWND_TOP, SWP_NOSIZE|SWP_NOMOVE|SWP_NOACTIVATE|...)`
-    ///    raises the Z-order without moving/resizing/activating the window.
-    /// 5. Detach input queues (always, even on error).
-    /// 6. If the window was **not** maximised, restore the original placement so
+    ///    thread) so the OS foreground lock cannot block us — this is what
+    ///    lets `SetForegroundWindow` succeed below even when `focus` is
+    ///    requested from a background/console process.
+    /// 3. Two modes, selected by `focus`:
+    ///    - `focus == false` (default, "raise only"): if the window is
+    ///      iconic (minimised) → `SW_SHOWNOACTIVATE` (4), otherwise →
+    ///      `SW_SHOWNA` (8) — make it visible without stealing focus, then
+    ///      `SetWindowPos(..., HWND_TOP, SWP_NOACTIVATE|...)` raises the
+    ///      Z-order without moving/resizing/activating the window.
+    ///    - `focus == true`: `SW_RESTORE`/`SW_SHOW` instead, `SetWindowPos`
+    ///      without `SWP_NOACTIVATE`, followed by `SetForegroundWindow` —
+    ///      this actually activates the window and steals input focus, like
+    ///      an Alt-Tab switch would.
+    /// 4. Detach input queues (always, even on error).
+    /// 5. If the window was **not** maximised, restore the original placement so
     ///    position/size are exactly as before.  If it **was** maximised, skip
     ///    `SetWindowPlacement` — calling it on a maximised window forces it back
     ///    to restored size, which is the bug we are fixing.
-    fn raise_now(hwnd: HWND, title: &str) -> Result<()> {
+    fn raise_now(hwnd: HWND, title: &str, focus: bool) -> Result<()> {
         unsafe {
             // ── 1. Snapshot current placement ────────────────────────────────
             let mut wp = WINDOWPLACEMENT {
@@ -368,31 +385,60 @@ mod platform {
                 && target_tid != fg_tid
                 && AttachThreadInput(our_tid, target_tid, true).as_bool();
 
-            // ── 3 & 4. Show without activating, then raise Z-order ───────────
+            // ── 3. Show (± activate), then raise Z-order (± activate) ────────
             let show_result = (|| -> Result<()> {
-                if IsIconic(hwnd).as_bool() {
-                    // Minimised → show without activating
-                    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-                } else {
-                    // Normal or Maximised → ensure visible without focus
-                    ShowWindow(hwnd, SW_SHOWNA);
-                }
+                if focus {
+                    // Requested: actually activate the window.
+                    if IsIconic(hwnd).as_bool() {
+                        ShowWindow(hwnd, SW_RESTORE);
+                    } else {
+                        ShowWindow(hwnd, SW_SHOW);
+                    }
 
-                SetWindowPos(
-                    hwnd,
-                    HWND_TOP,
-                    0,
-                    0,
-                    0,
-                    0,
-                    SET_WINDOW_POS_FLAGS(
-                        SWP_NOSIZE.0
-                            | SWP_NOMOVE.0
-                            | SWP_NOACTIVATE.0
-                            | SWP_NOOWNERZORDER.0
-                            | SWP_SHOWWINDOW.0,
-                    ),
-                )?;
+                    SetWindowPos(
+                        hwnd,
+                        HWND_TOP,
+                        0,
+                        0,
+                        0,
+                        0,
+                        SET_WINDOW_POS_FLAGS(
+                            SWP_NOSIZE.0
+                                | SWP_NOMOVE.0
+                                | SWP_NOOWNERZORDER.0
+                                | SWP_SHOWWINDOW.0,
+                        ),
+                    )?;
+
+                    // AttachThreadInput above lets this succeed even though
+                    // we're not currently the foreground process.
+                    let _ = SetForegroundWindow(hwnd);
+                } else {
+                    // Default: raise to the top without stealing focus.
+                    if IsIconic(hwnd).as_bool() {
+                        // Minimised → show without activating
+                        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+                    } else {
+                        // Normal or Maximised → ensure visible without focus
+                        ShowWindow(hwnd, SW_SHOWNA);
+                    }
+
+                    SetWindowPos(
+                        hwnd,
+                        HWND_TOP,
+                        0,
+                        0,
+                        0,
+                        0,
+                        SET_WINDOW_POS_FLAGS(
+                            SWP_NOSIZE.0
+                                | SWP_NOMOVE.0
+                                | SWP_NOACTIVATE.0
+                                | SWP_NOOWNERZORDER.0
+                                | SWP_SHOWWINDOW.0,
+                        ),
+                    )?;
+                }
 
                 Ok(())
             })();
@@ -480,7 +526,7 @@ mod platform {
         ])
     }
 
-    pub fn bring_to_front(info: &WindowInfo) -> Result<()> {
+    pub fn bring_to_front(info: &WindowInfo, _focus: bool) -> Result<()> {
         bail!(
             "bring_to_front is not supported on this platform (hwnd={})",
             info.hwnd
@@ -497,7 +543,7 @@ mod platform {
     /// Non-Windows stub for the hidden `--__raise` helper entry point.
     /// This codepath only ever runs on Windows in practice; kept here so
     /// the crate still compiles on Linux/macOS CI.
-    pub fn run_delayed_raise_and_exit(hwnd: usize) -> ! {
+    pub fn run_delayed_raise_and_exit(hwnd: usize, _focus: bool) -> ! {
         eprintln!(
             "raise is not supported on this platform (hwnd={})",
             hwnd

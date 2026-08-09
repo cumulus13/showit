@@ -11,8 +11,9 @@
 ## Features
 
 - **Substring / wildcard / regex search** — plain text, `*`/`?` globs, or full regex with `-r`
+- **Raise or focus** — by default the window is only raised (brought on top, keyboard focus stays put); pass `-f`/`--focus` to actually activate it and steal input focus, like Alt-Tab
 - **Vivid hex-colour output** — each title gets its own colour from a configurable palette; the matched portion is highlighted
-- **Interactive REPL** — after results appear, type a number to focus, `[n]c` to close, or any text to search again
+- **Interactive REPL** — after results appear, type a number to raise/focus, `[n]c` to close, or any text to search again
 - **Config file** — `config.toml` lets you set any colour in the palette, the index colour, match highlight, errors, success messages
 - **Single static binary** — no runtime dependencies; ships as a native Windows `.exe`
 
@@ -47,6 +48,7 @@ showit [OPTIONS] [PATTERN]
 |-------------------|-----------------------------------------------------|
 | `PATTERN`         | Title to search (substring by default)              |
 | `-r, --regex`     | Treat PATTERN as a regular expression               |
+| `-f, --focus`     | Activate the window (steal focus) instead of only raising it |
 | `-l, --list`      | List **all** visible windows                        |
 | `--config-path`   | Print the path to the config file                   |
 | `--init-config`   | Write a default config file (won't overwrite)       |
@@ -67,18 +69,22 @@ showit -r "term|bash"
 
 # List every visible window
 showit --list
+
+# Raise AND steal keyboard focus (default only raises)
+showit -f firefox
 ```
 
 ### Interactive commands
 
-After results are displayed:
+After results are displayed, picking a window **quits immediately** after
+acting on it — the only input that *doesn't* quit is typing new search text.
 
-| Input       | Effect                                        |
-|-------------|-----------------------------------------------|
-| `3`         | Bring window #3 to the front                  |
-| `2c`        | **Close** window #2 (sends WM_CLOSE)          |
-| `notepad`   | Start a new search for "notepad"              |
-| `x` / `q`  | Quit                                          |
+| Input       | Effect                                                    |
+|-------------|------------------------------------------------------------|
+| `3`         | Raise window #3 (add `-f`/`--focus` at launch to also steal focus), then quit |
+| `2c`        | **Close** window #2 (sends WM_CLOSE), then quit             |
+| `notepad`   | Start a new search for "notepad" — does **not** quit        |
+| `x` / `q`   | Quit                                                        |
 
 ---
 

@@ -33,13 +33,16 @@ use windows_api::{
     version,
     about = "Search open window titles and bring one to the foreground",
     long_about = "Usage: showit <pattern>\n\n\
-    Searches visible window titles. If one match: focus immediately.\n\
+    Searches visible window titles. If one match: raise immediately.\n\
     If multiple: show list, pick a number.\n\n\
     After list is shown:\n\
-      <number>   focus that window (then quit)\n\
+      <number>   raise that window (then quit)\n\
       <n>c       close window n   (then quit)\n\
       <text>     new search\n\
       x / q      quit\n\n\
+    By default the window is only raised to the top (its z-order/visibility\n\
+    changes but keyboard focus is left wherever it was). Pass -f/--focus to\n\
+    actually activate it (SetForegroundWindow), stealing input focus too.\n\n\
     Homepage: https://github.com/cumulus13/showit"
 )]
 struct Args {
@@ -49,6 +52,10 @@ struct Args {
     /// Treat pattern as a regular expression
     #[arg(short, long)]
     regex: bool,
+
+    /// Activate (focus) the window instead of only raising it to the top
+    #[arg(short, long)]
+    focus: bool,
 
     /// Print the config file path and exit
     #[arg(long)]
@@ -69,13 +76,14 @@ fn main() -> Result<()> {
     let os_args: Vec<String> = std::env::args().collect();
 
     // Hidden internal entry point: bring_to_front() re-execs itself as
-    // `showit --__raise <hwnd>`, detached and delayed, so the actual raise
-    // happens *after* the parent console (conhost) has already reclaimed
-    // its own foreground on exit. See windows_api::bring_to_front for the
-    // full explanation. Not a documented/public flag — never returns.
-    if os_args.len() == 3 && os_args[1] == "--__raise" {
+    // `showit --__raise <hwnd> <focus>`, detached and delayed, so the actual
+    // raise happens *after* the parent console (conhost) has already
+    // reclaimed its own foreground on exit. See windows_api::bring_to_front
+    // for the full explanation. Not a documented/public flag — never returns.
+    if os_args.len() == 4 && os_args[1] == "--__raise" {
         if let Ok(hwnd) = os_args[2].parse::<usize>() {
-            run_delayed_raise_and_exit(hwnd);
+            let focus = os_args[3] == "1";
+            run_delayed_raise_and_exit(hwnd, focus);
         }
         std::process::exit(1);
     }
@@ -102,10 +110,10 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    run(&args.pattern, args.regex, &cfg)
+    run(&args.pattern, args.regex, args.focus, &cfg)
 }
 
-fn run(pattern: &str, force_regex: bool, cfg: &Config) -> Result<()> {
+fn run(pattern: &str, force_regex: bool, focus: bool, cfg: &Config) -> Result<()> {
     let mut current_query = pattern.to_string();
 
     loop {
@@ -130,7 +138,7 @@ fn run(pattern: &str, force_regex: bool, cfg: &Config) -> Result<()> {
             // ── Single match: focus and quit ──────────────────────────────────
             1 => {
                 let win = matched[0];
-                match bring_to_front(win) {
+                match bring_to_front(win, focus) {
                     Ok(()) => print_success(&format!("{} brought to the front.", win.title), cfg),
                     Err(e) => print_error(&format!("Failed: {}", e), cfg),
                 }
@@ -142,7 +150,7 @@ fn run(pattern: &str, force_regex: bool, cfg: &Config) -> Result<()> {
             _ => {
                 show_list(&matched, &current_query, cfg);
 
-                match pick_loop(&matched, cfg)? {
+                match pick_loop(&matched, focus, cfg)? {
                     PickAction::NewSearch(new_query) => {
                         current_query = new_query;
                         continue;
@@ -238,7 +246,7 @@ fn show_list(windows: &[&WindowInfo], query: &str, cfg: &Config) {
     println!(
         "{}",
         colorize(
-            "  [number] focus (quit)   [n]c close (quit)   [text] new search   x quit",
+            "  [number] raise (quit)   [n]c close (quit)   [text] new search   x quit",
             &cfg.index_color
         )
     );
@@ -250,7 +258,7 @@ fn show_list(windows: &[&WindowInfo], query: &str, cfg: &Config) {
 ///   [n]c     → close → **Quit**
 ///   text     → NewSearch
 ///   x/q      → Quit
-fn pick_loop(windows: &[&WindowInfo], cfg: &Config) -> Result<PickAction> {
+fn pick_loop(windows: &[&WindowInfo], focus: bool, cfg: &Config) -> Result<PickAction> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
 
@@ -300,7 +308,7 @@ fn pick_loop(windows: &[&WindowInfo], cfg: &Config) -> Result<PickAction> {
         if let Ok(n) = input.parse::<usize>() {
             if n >= 1 && n <= windows.len() {
                 let win = windows[n - 1];
-                match bring_to_front(win) {
+                match bring_to_front(win, focus) {
                     Ok(()) => print_success(&format!("{} brought to the front.", win.title), cfg),
                     Err(e) => print_error(&format!("Failed: {}", e), cfg),
                 }
