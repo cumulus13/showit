@@ -7,6 +7,7 @@
 //   - hex colored titles (different color per title)
 //   - config file for custom colors
 //   - [n]c = close window n
+//   - [n]f = raise window n in focused mode (steals focus)
 //   - typing any text (not a number) = new search with that text
 //   - x/q = quit
 
@@ -37,12 +38,15 @@ use windows_api::{
     If multiple: show list, pick a number.\n\n\
     After list is shown:\n\
       <number>   raise that window (then quit)\n\
+      <n>f       raise that window IN FOCUSED MODE, stealing focus\n\
+                 regardless of -f/--focus (then quit)\n\
       <n>c       close window n   (then quit)\n\
       <text>     new search\n\
       x / q      quit\n\n\
     By default the window is only raised to the top (its z-order/visibility\n\
     changes but keyboard focus is left wherever it was). Pass -f/--focus to\n\
-    actually activate it (SetForegroundWindow), stealing input focus too.\n\n\
+    make every raise activate it (SetForegroundWindow) instead, stealing\n\
+    input focus too — or use the per-pick <n>f form above for a one-off.\n\n\
     Homepage: https://github.com/cumulus13/showit"
 )]
 struct Args {
@@ -246,7 +250,7 @@ fn show_list(windows: &[&WindowInfo], query: &str, cfg: &Config) {
     println!(
         "{}",
         colorize(
-            "  [number] raise (quit)   [n]c close (quit)   [text] new search   x quit",
+            "  [number] raise (quit)   [n]f focus (quit)   [n]c close (quit)   [text] new search   x quit",
             &cfg.index_color
         )
     );
@@ -254,7 +258,8 @@ fn show_list(windows: &[&WindowInfo], query: &str, cfg: &Config) {
 }
 
 /// Read one line from stdin and dispatch:
-///   number   → focus → **Quit**
+///   number   → raise (respects launch-time -f/--focus) → **Quit**
+///   [n]f     → raise IN FOCUSED MODE (steals focus) → **Quit**
 ///   [n]c     → close → **Quit**
 ///   text     → NewSearch
 ///   x/q      → Quit
@@ -304,7 +309,29 @@ fn pick_loop(windows: &[&WindowInfo], focus: bool, cfg: &Config) -> Result<PickA
             // suffix 'c' but non-numeric prefix → fall through to NewSearch
         }
 
-        // plain number → focus → quit
+        // [n]f → raise IN FOCUSED MODE (steals focus regardless of the
+        // launch-time -f/--focus setting) → quit
+        if let Some(num_str) = input.strip_suffix('f').or_else(|| input.strip_suffix('F')) {
+            if let Ok(n) = num_str.trim().parse::<usize>() {
+                if n >= 1 && n <= windows.len() {
+                    let win = windows[n - 1];
+                    match bring_to_front(win, true) {
+                        Ok(()) => print_success(
+                            &format!("{} brought to the front (focused).", win.title),
+                            cfg,
+                        ),
+                        Err(e) => print_error(&format!("Failed: {}", e), cfg),
+                    }
+                } else {
+                    print_error(&format!("Invalid: enter 1-{}.", windows.len()), cfg);
+                    continue; // bad number: re-prompt
+                }
+                return Ok(PickAction::Quit); // ← quit after focus
+            }
+            // suffix 'f' but non-numeric prefix → fall through to NewSearch
+        }
+
+        // plain number → raise (launch-time -f/--focus setting applies) → quit
         if let Ok(n) = input.parse::<usize>() {
             if n >= 1 && n <= windows.len() {
                 let win = windows[n - 1];

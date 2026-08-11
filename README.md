@@ -11,7 +11,7 @@
 ## Features
 
 - **Substring / wildcard / regex search** — plain text, `*`/`?` globs, or full regex with `-r`
-- **Raise or focus** — by default the window is only raised (brought on top, keyboard focus stays put); pass `-f`/`--focus` to actually activate it and steal input focus, like Alt-Tab
+- **Raise or focus** — by default the window is only raised (brought on top, keyboard focus stays put); pass `-f`/`--focus` to actually activate it and steal input focus, like Alt-Tab. In the interactive list, suffix a pick with `f` (e.g. `3f`) to focus just that one window regardless of the launch-time flag
 - **Vivid hex-colour output** — each title gets its own colour from a configurable palette; the matched portion is highlighted
 - **Interactive REPL** — after results appear, type a number to raise/focus, `[n]c` to close, or any text to search again
 - **Config file** — `config.toml` lets you set any colour in the palette, the index colour, match highlight, errors, success messages
@@ -81,7 +81,8 @@ acting on it — the only input that *doesn't* quit is typing new search text.
 
 | Input       | Effect                                                    |
 |-------------|------------------------------------------------------------|
-| `3`         | Raise window #3 (add `-f`/`--focus` at launch to also steal focus), then quit |
+| `3`         | Raise window #3 (respects `-f`/`--focus` from launch), then quit |
+| `3f`        | Raise window #3 **in focused mode** — steals focus regardless of launch-time `-f`, then quit |
 | `2c`        | **Close** window #2 (sends WM_CLOSE), then quit             |
 | `notepad`   | Start a new search for "notepad" — does **not** quit        |
 | `x` / `q`   | Quit                                                        |

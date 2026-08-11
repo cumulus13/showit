@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.17] — 2026-08-12
+
+### Added
+- `[n]f` interactive command: raise window `n` **in focused mode**, stealing
+  input focus (`SetForegroundWindow`) regardless of whether `-f`/`--focus`
+  was passed at launch. Sits alongside the existing `[n]c` (close) form —
+  plain `<number>` still respects the launch-time `-f` setting.
+
 ## [0.1.16] — 2026-08-08
 
 ### Added

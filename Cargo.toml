@@ -1,6 +1,6 @@
 [package]
 name = "showit"
-version = "0.1.16"
+version = "0.1.17"
 edition = "2021"
 authors = ["Hadi Cahyadi <cumulus13@gmail.com>"]
 description = "Bring any Windows window to the foreground by searching its title — fast, coloured, interactive."
