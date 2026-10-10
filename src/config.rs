@@ -45,6 +45,10 @@ pub struct Config {
     /// Color for the user/role tag at the end of the title, e.g. "(ADMIN)" or "(John)".
     #[serde(default = "default_user_color")]
     pub user_color: String,
+
+    /// Color for parenthesised groups like "(project)" or "(liputan6)" in the doc part.
+    #[serde(default = "default_group_color")]
+    pub group_color: String,
 }
 
 fn default_doc_color() -> String {
@@ -57,6 +61,10 @@ fn default_app_color() -> String {
 
 fn default_user_color() -> String {
     "#AA55FF".into()
+}
+
+fn default_group_color() -> String {
+    "#FFAAFF".into()
 }
 
 fn default_colors() -> Vec<String> {
@@ -108,6 +116,7 @@ impl Default for Config {
             doc_color: default_doc_color(),
             app_color: default_app_color(),
             user_color: default_user_color(),
+            group_color: default_group_color(),
         }
     }
 }
@@ -208,5 +217,10 @@ mod tests {
     fn default_config_has_colors() {
         let cfg = Config::default();
         assert!(!cfg.colors.is_empty());
+    }
+
+    #[test]
+    fn default_group_color_is_ffaaff() {
+        assert_eq!(Config::default().group_color, "#FFAAFF");
     }
 }

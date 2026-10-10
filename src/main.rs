@@ -20,7 +20,7 @@ use anyhow::Result;
 use clap::Parser;
 use clap_version_flag::colorful_version;
 use config::Config;
-use display::{colorize, print_error, print_success};
+use display::{colorize, colorize_groups, print_error, print_success};
 use search::{detect_mode, filter_windows};
 use std::io::{self, BufRead, Write};
 use windows_api::{
@@ -198,17 +198,20 @@ fn run(pattern: &str, force_regex: bool, focus: bool, cfg: &Config) -> Result<()
 /// For normal windows the existing doc / app / user split is kept:
 ///
 ///   `  3.  readme.txt - Notepad`
+///
+/// Any balanced "(...)" group in the doc part (e.g. "(django-celery)") is
+/// rendered in `cfg.group_color`.
 fn format_entry(win: &WindowInfo, cfg: &Config) -> String {
     if win.title_is_unreliable() {
         let label = win.type_label();
         let type_part = colorize(&format!("[{}]", label), &cfg.app_color);
-        let title_part = colorize(&win.title, &cfg.index_color);
+        let title_part = colorize_groups(&win.title, &cfg.index_color, &cfg.group_color);
         format!("{}  {}", type_part, title_part)
     } else {
         // Original doc / app / user split on the LAST " - "
         match win.title.rfind(" - ") {
             Some(pos) => {
-                let doc = colorize(&win.title[..pos], &cfg.doc_color);
+                let doc = colorize_groups(&win.title[..pos], &cfg.doc_color, &cfg.group_color);
                 let sep = colorize(" - ", &cfg.index_color);
                 let app_full = &win.title[pos + 3..];
 
@@ -227,7 +230,7 @@ fn format_entry(win: &WindowInfo, cfg: &Config) -> String {
 
                 format!("{}{}{}", doc, sep, app_colored)
             }
-            None => colorize(&win.title, &cfg.doc_color),
+            None => colorize_groups(&win.title, &cfg.doc_color, &cfg.group_color),
         }
     }
 }
