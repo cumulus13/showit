@@ -37,12 +37,12 @@ use windows_api::{
     Searches visible window titles. If one match: raise immediately.\n\
     If multiple: show list, pick a number.\n\n\
     After list is shown:\n\
-      <number>   raise that window (then quit)\n\
-      <n>f       raise that window IN FOCUSED MODE, stealing focus\n\
-                 regardless of -f/--focus (then quit)\n\
-      <n>c       close window n   (then quit)\n\
-      <text>     new search\n\
-      x / q      quit\n\n\
+\x20 <number>   raise that window (then quit)\n\
+\x20 <n>f       raise that window IN FOCUSED MODE, stealing focus\n\
+\x20            regardless of -f/--focus (then quit)\n\
+\x20 <n>c       close window n   (then quit)\n\
+\x20 <text>     new search\n\
+\x20 x / q      quit\n\n\
     By default the window is only raised to the top (its z-order/visibility\n\
     changes but keyboard focus is left wherever it was). Pass -f/--focus to\n\
     make every raise activate it (SetForegroundWindow) instead, stealing\n\
@@ -51,7 +51,8 @@ use windows_api::{
 )]
 struct Args {
     /// Window title pattern (substring / wildcard * / regex with -r)
-    pattern: String,
+    #[arg(required_unless_present_any = ["config_path", "init_config"])]
+    pattern: Option<String>,
 
     /// Treat pattern as a regular expression
     #[arg(short, long)]
@@ -114,7 +115,8 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    run(&args.pattern, args.regex, args.focus, &cfg)
+    let pattern = args.pattern.unwrap_or_default();
+    run(&pattern, args.regex, args.focus, &cfg)
 }
 
 fn run(pattern: &str, force_regex: bool, focus: bool, cfg: &Config) -> Result<()> {
