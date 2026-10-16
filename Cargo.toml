@@ -13,7 +13,7 @@ readme = "README.md"
 exclude = [".github"]
 
 [dependencies]
-anyhow = "=1.0.86"
+anyhow = "=1.0.102"
 clap = { version = "=4.5.53", features = ["derive", "color"] }
 clap-version-flag = "1.0.7"
 colored = "=2.1.0"
