@@ -16,7 +16,7 @@ exclude = [".github"]
 anyhow = "=1.0.86"
 clap = { version = "=4.5.53", features = ["derive", "color"] }
 clap-version-flag = "1.0.7"
-colored = "=2.1.0"
+colored = "=3.1.1"
 dirs = "=5.0.1"
 regex = "=1.10.4"
 serde = { version = "=1.0.197", features = ["derive"] }
